@@ -1,0 +1,54 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Packaging & virtual environments
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Test, coverage & linter caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# Backups, logs & temporary files
+*.bak
+*.log
+*.tmp
+*~
+*.swp
+*.swo
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
