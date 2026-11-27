@@ -28,30 +28,236 @@ TOKEN_COLOR = "\033[97m"         # 亮白（可选扩展字段）
 
 DEFAULT_BAR_WIDTH = 8
 
-# 最新模型公开定价（USD / 1M tokens）；默认采用 Gemini 4 Hydrogen 最新价格
-DEFAULT_MODEL_PRICE = {"input": 1.50, "cache": 0.075, "output": 7.50}
+# =============================================================================
+# 集中配置字典：新增模型 / 配额池 / 场景规则只需维护下面 3 个字典
+# =============================================================================
 
-MODEL_PRICES: tuple[tuple[str, dict[str, float]], ...] = (
-    ("gemini-4-hydrogen", {"input": 1.50, "cache": 0.075, "output": 7.50}),
-    ("gemini-4-neon", {"input": 3.00, "cache": 0.15, "output": 15.00}),
-    ("gemini-4-carbon", {"input": 2.00, "cache": 0.10, "output": 10.00}),
-    ("gemini-4-argon", {"input": 2.00, "cache": 0.10, "output": 10.00}),
-    ("gemini-3.8-flash", {"input": 0.75, "cache": 0.075, "output": 3.75}),
-    ("gemini-3.7-flash", {"input": 0.75, "cache": 0.075, "output": 3.75}),
-    ("gemini-3.6-flash", {"input": 0.75, "cache": 0.075, "output": 3.75}),
-    ("gemini-3-flash", {"input": 0.75, "cache": 0.075, "output": 3.75}),
-    ("gemini-3.5-flash-lite", {"input": 0.30, "cache": 0.03, "output": 2.50}),
-    ("gemini-3.1-flash-lite", {"input": 0.25, "cache": 0.025, "output": 1.50}),
-    ("gemini-3.1-pro", {"input": 2.00, "cache": 0.20, "output": 12.00}),
+# 配额池家族映射（顺序决定优先级：先匹配第三方模型关键字，再回退到 Gemini）
+QUOTA_FAMILIES: dict[str, dict[str, Any]] = {
+    "claude": {
+        "quota_prefixes": ("claude", "anthropic", "3p"),
+        "fallback_keywords": ("claude", "anthropic", "sonnet", "opus", "haiku"),
+        "fallback_tokens": (),
+    },
+    "openai": {
+        "quota_prefixes": ("gpt", "openai", "claude", "3p"),
+        "fallback_keywords": ("gpt", "openai", "codex"),
+        "fallback_tokens": ("o1", "o3", "o4"),
+    },
+    "gemini": {
+        "quota_prefixes": ("gemini",),
+        "fallback_keywords": ("gemini",),
+        "fallback_tokens": (),
+    },
+}
+
+# 单一数据源：每个模型的匹配规则、所属配额家族、特殊 bucket 变体及公开定价（USD / 1M tokens）
+# 以后新增模型只需在此字典追加一条记录。
+MODEL_CONFIGS: dict[str, dict[str, Any]] = {
+    # --- Gemini 4 ---
+    "gemini-4-neon": {
+        "match": ("gemini-4-neon",),
+        "tokens": ("neon",),
+        "family": "gemini",
+        "price": {"input": 3.00, "cache": 0.15, "output": 15.00},
+    },
+    "gemini-4-hydrogen": {
+        "match": ("gemini-4-hydrogen",),
+        "tokens": ("hydrogen",),
+        "family": "gemini",
+        "price": {"input": 1.50, "cache": 0.075, "output": 7.50},
+    },
+    "gemini-4-carbon": {
+        "match": ("gemini-4-carbon",),
+        "tokens": ("carbon",),
+        "family": "gemini",
+        "price": {"input": 2.00, "cache": 0.10, "output": 10.00},
+    },
+    "gemini-4-argon": {
+        "match": ("gemini-4-argon",),
+        "tokens": ("argon",),
+        "family": "gemini",
+        "quota_variants": ("argon",),
+        "price": {"input": 2.00, "cache": 0.10, "output": 10.00},
+    },
+    # --- Gemini 3 ---
+    "gemini-3.8-flash": {
+        "match": ("gemini-3.8-flash",),
+        "family": "gemini",
+        "price": {"input": 0.75, "cache": 0.075, "output": 3.75},
+    },
+    "gemini-3.7-flash": {
+        "match": ("gemini-3.7-flash",),
+        "family": "gemini",
+        "price": {"input": 0.75, "cache": 0.075, "output": 3.75},
+    },
+    "gemini-3.6-flash": {
+        "match": ("gemini-3.6-flash",),
+        "family": "gemini",
+        "price": {"input": 0.75, "cache": 0.075, "output": 3.75},
+    },
+    "gemini-3.5-flash-lite": {
+        "match": ("gemini-3.5-flash-lite",),
+        "family": "gemini",
+        "price": {"input": 0.30, "cache": 0.03, "output": 2.50},
+    },
+    "gemini-3.1-flash-lite": {
+        "match": ("gemini-3.1-flash-lite",),
+        "family": "gemini",
+        "price": {"input": 0.25, "cache": 0.025, "output": 1.50},
+    },
+    "gemini-3.1-pro": {
+        "match": ("gemini-3.1-pro",),
+        "family": "gemini",
+        "price": {"input": 2.00, "cache": 0.20, "output": 12.00},
+    },
+    "gemini-3-flash": {
+        "match": ("gemini-3-flash", "gemini-flash"),
+        "tokens": ("flash",),
+        "family": "gemini",
+        "price": {"input": 0.75, "cache": 0.075, "output": 3.75},
+    },
+    # --- Anthropic Claude (3P) ---
+    "claude-opus-5": {
+        "match": ("claude-opus-5", "opus-5"),
+        "family": "claude",
+        "price": {"input": 4.00, "cache": 0.40, "output": 20.00},
+    },
+    "claude-opus-4": {
+        "match": ("claude-opus-4", "claude-4-opus", "opus-4", "claude-opus"),
+        "tokens": ("opus",),
+        "family": "claude",
+        "price": {"input": 15.00, "cache": 1.50, "output": 75.00},
+    },
+    "claude-sonnet-5": {
+        "match": ("claude-sonnet-5", "sonnet-5"),
+        "family": "claude",
+        "price": {"input": 2.00, "cache": 0.20, "output": 10.00},
+    },
+    "claude-sonnet-4": {
+        "match": ("claude-sonnet-4", "claude-4-sonnet", "sonnet-4", "claude-sonnet"),
+        "tokens": ("sonnet",),
+        "family": "claude",
+        "price": {"input": 3.00, "cache": 0.30, "output": 15.00},
+    },
+    "claude-haiku-5": {
+        "match": ("claude-haiku-5", "haiku-5"),
+        "family": "claude",
+        "price": {"input": 0.10, "cache": 0.01, "output": 0.50},
+    },
+    "claude-haiku-4": {
+        "match": ("claude-haiku-4", "claude-4-haiku", "haiku-4", "claude-haiku"),
+        "tokens": ("haiku",),
+        "family": "claude",
+        "price": {"input": 1.00, "cache": 0.10, "output": 5.00},
+    },
+    # --- OpenAI / GPT (3P) ---
+    "gpt-5": {
+        "match": ("gpt-5",),
+        "family": "openai",
+        "price": {"input": 1.25, "cache": 0.125, "output": 10.00},
+    },
+    "gpt-oss": {
+        "match": ("gpt-oss",),
+        "family": "openai",
+        "price": {"input": 0.15, "cache": 0.015, "output": 0.60},
+    },
+    "gpt-4o": {
+        "match": ("gpt-4o",),
+        "family": "openai",
+        "price": {"input": 2.50, "cache": 1.25, "output": 10.00},
+    },
+    "openai-o3": {
+        "match": ("o3-pro", "o3-mini"),
+        "tokens": ("o3",),
+        "family": "openai",
+        "price": {"input": 2.00, "cache": 0.50, "output": 8.00},
+    },
+    "openai-o4": {
+        "match": ("o4-mini",),
+        "tokens": ("o4",),
+        "family": "openai",
+        "price": {"input": 1.10, "cache": 0.275, "output": 4.40},
+    },
+    "openai-o1": {
+        "match": ("o1-pro", "o1-mini"),
+        "tokens": ("o1",),
+        "family": "openai",
+        "price": {"input": 15.00, "cache": 7.50, "output": 60.00},
+    },
+    "openai-codex": {
+        "match": ("codex",),
+        "family": "openai",
+        "price": {"input": 1.50, "cache": 0.15, "output": 6.00},
+    },
+    # --- Generic Gemini Pro fallback (placed after 3P so "pro" never shadows o3-pro) ---
+    "gemini-pro": {
+        "match": ("gemini-pro", "gemini-3-pro", "gemini-2.5-pro"),
+        "tokens": ("pro",),
+        "family": "gemini",
+        "price": {"input": 2.00, "cache": 0.20, "output": 12.00},
+    },
+}
+
+# 场景规则配置（Orchestrator / 配额时间窗 / transcript 目录搜索）
+SCENARIO_CONFIGS: dict[str, dict[str, Any]] = {
+    "orchestrator": {
+        "match": ("orchestrator",),
+        "settings_key": "orchestrator",
+        "role_priority": ("planner", "executor"),
+        "settings_env": "AGY_SETTINGS_FILE",
+        "default_settings_path": "~/.gemini/antigravity-cli/settings.json",
+    },
+    "quota_windows": {
+        "short_tokens": (
+            "5h", "5_h", "5-h", "5hr", "5_hr", "5-hr",
+            "5hour", "5_hour", "5-hour", "five_hour", "five-hour", "fivehour", "short",
+        ),
+        "weekly_tokens": ("week", "weekly", "7d", "7_d", "7-d"),
+        "ignored_extra_tokens": ("wtu", "limit", "quota"),
+        "short_max_seconds": 6 * 3600,
+    },
+    "transcript": {
+        "base_dirs": ("antigravity-cli", "antigravity", "antigravity-ide"),
+    },
+}
+
+# 兼容导出：默认定价与价格表均由 MODEL_CONFIGS 派生
+DEFAULT_MODEL_KEY = "gemini-4-hydrogen"
+DEFAULT_MODEL_PRICE: dict[str, float] = MODEL_CONFIGS[DEFAULT_MODEL_KEY]["price"]
+MODEL_PRICES: tuple[tuple[str, dict[str, float]], ...] = tuple(
+    (k, cfg["price"]) for k, cfg in MODEL_CONFIGS.items() if "price" in cfg
 )
 
 
+def _normalize_model_name(model_name: str) -> str:
+    return re.sub(r"[\s_]+", "-", (model_name or "").strip().lower())
+
+
+def _tokenize_model_name(model_name: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", (model_name or "").strip().lower()) if t}
+
+
+def resolve_model_config(model_name: str) -> dict[str, Any] | None:
+    """Resolve a model entry from MODEL_CONFIGS via two-pass matching (substrings first, then tokens)."""
+    norm = _normalize_model_name(model_name)
+    if not norm:
+        return None
+    for cfg in MODEL_CONFIGS.values():
+        if any(pat in norm for pat in cfg.get("match", ())):
+            return cfg
+    tokens = _tokenize_model_name(model_name)
+    if tokens:
+        for cfg in MODEL_CONFIGS.values():
+            if tokens & set(cfg.get("tokens", ())):
+                return cfg
+    return None
+
+
 def resolve_model_price(model_name: str) -> dict[str, float]:
-    ml = (model_name or "").strip().lower()
-    if ml:
-        for prefix, price in MODEL_PRICES:
-            if prefix in ml:
-                return price
+    cfg = resolve_model_config(model_name)
+    if cfg and isinstance(cfg.get("price"), dict):
+        return cfg["price"]
     return DEFAULT_MODEL_PRICE
 
 
@@ -211,7 +417,8 @@ def find_transcript(payload: dict[str, Any]) -> str | None:
         or payload.get("session_id")
     )
     if isinstance(cid, str) and cid:
-        for base in ("antigravity-cli", "antigravity", "antigravity-ide"):
+        base_dirs = SCENARIO_CONFIGS.get("transcript", {}).get("base_dirs", ("antigravity-cli",))
+        for base in base_dirs:
             p = os.path.expanduser(
                 f"~/.gemini/{base}/brain/{cid}/.system_generated/logs/transcript.jsonl"
             )
@@ -493,6 +700,98 @@ def fmt_reset_duration(seconds: float | None) -> str:
     return f"{max(1, round(seconds / 3600.0))}h"
 
 
+def infer_quota_variant_tokens(model_name: str) -> set[str]:
+    tokens = _tokenize_model_name(model_name)
+    cfg = resolve_model_config(model_name)
+    if cfg:
+        tokens.update(cfg.get("quota_variants", ()))
+    return tokens
+
+
+def infer_preferred_quota_prefixes(model_name: str) -> list[str]:
+    norm = _normalize_model_name(model_name)
+    if not norm:
+        return []
+    cfg = resolve_model_config(model_name)
+    if cfg:
+        if cfg.get("quota_prefixes"):
+            return list(cfg["quota_prefixes"])
+        fam_cfg = QUOTA_FAMILIES.get(cfg.get("family", ""))
+        if fam_cfg:
+            return list(fam_cfg.get("quota_prefixes", ()))
+
+    tokens = _tokenize_model_name(model_name)
+    for fam_cfg in QUOTA_FAMILIES.values():
+        if any(kw in norm for kw in fam_cfg.get("fallback_keywords", ())) or bool(
+            tokens & set(fam_cfg.get("fallback_tokens", ()))
+        ):
+            return list(fam_cfg.get("quota_prefixes", ()))
+    return []
+
+
+def read_orchestrator_models_from_settings(settings_path: str | None = None) -> list[str]:
+    orch_cfg = SCENARIO_CONFIGS["orchestrator"]
+    path = (
+        settings_path
+        or os.environ.get(orch_cfg["settings_env"])
+        or os.path.expanduser(orch_cfg["default_settings_path"])
+    )
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    orch = data.get(orch_cfg["settings_key"])
+    if not isinstance(orch, dict):
+        return []
+    models: list[str] = []
+    for role in orch_cfg["role_priority"]:
+        val = orch.get(role)
+        if isinstance(val, str) and val.strip():
+            models.append(val.strip())
+    return models
+
+
+def resolve_quota_model_name(payload: dict[str, Any], latest_transcript: dict[str, Any]) -> str:
+    raw_candidates: list[str] = []
+    model_obj = payload.get("model")
+    if isinstance(model_obj, dict):
+        for key in ("display_name", "id"):
+            val = model_obj.get(key)
+            if isinstance(val, str) and val.strip():
+                raw_candidates.append(val.strip())
+    elif isinstance(model_obj, str) and model_obj.strip():
+        raw_candidates.append(model_obj.strip())
+
+    for cand in raw_candidates:
+        if infer_preferred_quota_prefixes(cand):
+            return cand
+
+    orch_cfg = SCENARIO_CONFIGS["orchestrator"]
+    orch_markers = orch_cfg.get("match", ("orchestrator",))
+    if any(any(m in _normalize_model_name(cand) for m in orch_markers) for cand in raw_candidates):
+        fallback_candidates: list[str] = []
+        payload_orch = payload.get(orch_cfg["settings_key"])
+        if isinstance(payload_orch, dict):
+            for role in orch_cfg["role_priority"]:
+                val = payload_orch.get(role)
+                if isinstance(val, str) and val.strip():
+                    fallback_candidates.append(val.strip())
+        fallback_candidates.extend(read_orchestrator_models_from_settings())
+        t_model = latest_transcript.get("model", "")
+        if isinstance(t_model, str) and t_model.strip():
+            fallback_candidates.append(t_model.strip())
+        for cand in fallback_candidates:
+            if infer_preferred_quota_prefixes(cand):
+                return cand
+
+    return extract_model_name(payload, fallback_model=latest_transcript.get("model", ""))
+
+
 def pick_quota_buckets(
     quota: dict[str, Any],
     model_name: str,
@@ -510,17 +809,10 @@ def pick_quota_buckets(
     if not active_items:
         return None, None
 
-    model_l = model_name.lower()
-    preferred_prefixes: list[str] = []
-    if "claude" in model_l or "sonnet" in model_l or "opus" in model_l or "haiku" in model_l:
-        preferred_prefixes = ["claude", "anthropic", "3p"]
-    elif "gpt" in model_l or "o1" in model_l or "o3" in model_l or "o4" in model_l:
-        preferred_prefixes = ["gpt", "openai", "claude", "3p"]
-    elif "gemini" in model_l:
-        preferred_prefixes = ["gemini"]
-
-    model_tokens = {t for t in re.split(r"[^a-z0-9]+", model_l) if t}
-    ignored_extra = {"wtu", "limit", "quota"}
+    preferred_prefixes = infer_preferred_quota_prefixes(model_name)
+    model_tokens = infer_quota_variant_tokens(model_name)
+    qw_cfg = SCENARIO_CONFIGS["quota_windows"]
+    ignored_extra = set(qw_cfg["ignored_extra_tokens"])
 
     def find_bucket(window_tokens: tuple[str, ...]) -> dict[str, Any] | None:
         scored: list[tuple[int, int, int, str, dict[str, Any]]] = []
@@ -559,14 +851,13 @@ def pick_quota_buckets(
         scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         return scored[0][4]
 
-    b_5h = find_bucket((
-        "5h", "5_h", "5-h", "5hr", "5_hr", "5-hr",
-        "5hour", "5_hour", "5-hour", "five_hour", "five-hour", "fivehour", "short",
-    ))
-    b_wk = find_bucket(("week", "weekly", "7d", "7_d", "7-d"))
+    b_5h = find_bucket(tuple(qw_cfg["short_tokens"]))
+    b_wk = find_bucket(tuple(qw_cfg["weekly_tokens"]))
 
     # Fallback: classify remaining buckets by reset horizon when key names omit window hints
     if b_5h is None or b_wk is None:
+        short_max = float(qw_cfg["short_max_seconds"])
+
         def pick_by_horizon(is_short: bool, excluded: dict[str, Any] | None) -> dict[str, Any] | None:
             candidates: list[tuple[int, float, dict[str, Any]]] = []
             for k, v in active_items:
@@ -575,10 +866,10 @@ def pick_quota_buckets(
                 secs = bucket_reset_seconds(v, now=now)
                 if secs is None:
                     continue
-                if is_short and secs <= 6 * 3600:
+                if is_short and secs <= short_max:
                     pref_rank = 0 if any(p in k.lower() for p in preferred_prefixes) else 1
                     candidates.append((pref_rank, secs, v))
-                elif not is_short and secs > 6 * 3600:
+                elif not is_short and secs > short_max:
                     pref_rank = 0 if any(p in k.lower() for p in preferred_prefixes) else 1
                     candidates.append((pref_rank, -secs, v))
             if not candidates:
@@ -623,11 +914,12 @@ def format_statusline(payload: dict[str, Any], now: datetime | None = None) -> s
     latest_t = read_latest_planner_from_transcript(transcript_path)
 
     model_name = extract_model_name(payload, fallback_model=latest_t.get("model", ""))
+    quota_model_name = resolve_quota_model_name(payload, latest_t)
 
     ctx_pct, ctx_tokens, ctx_size = compute_context_pct(payload, latest_t)
     cache_pct = compute_cache_hit_pct(payload, latest_t)
 
-    b_5h, b_wk = pick_quota_buckets(payload.get("quota") or {}, model_name, now=now)
+    b_5h, b_wk = pick_quota_buckets(payload.get("quota") or {}, quota_model_name, now=now)
     pct_5h = quota_pct(b_5h)
     pct_wk = quota_pct(b_wk)
 

@@ -143,6 +143,138 @@ class AgyslTests(unittest.TestCase):
         argon_out = agysl.format_statusline(argon_payload)
         self.assertIn("57%(2h)/100%(168h)", argon_out)
 
+    def test_quota_orchestrator_gemini_variants(self) -> None:
+        base_quota = {
+            "3p-5h": {"remaining_fraction": 1.0, "reset_in_seconds": 17823},
+            "3p-weekly": {"remaining_fraction": 1.0, "reset_in_seconds": 604623},
+            "gemini-5h": {"remaining_fraction": 0.5729523, "reset_in_seconds": 6008},
+            "gemini-argon-wtu-weekly": {"remaining_fraction": 1.0, "reset_in_seconds": 604623},
+            "gemini-weekly": {"remaining_fraction": 0.16663404, "reset_in_seconds": 328868},
+        }
+        for label in ("Orchestrator (Neon)", "Orchestrator (Hydrogen)"):
+            out = agysl.format_statusline({
+                "model": {"id": label, "display_name": label},
+                "quota": base_quota,
+            })
+            self.assertIn("57%(2h)/17%(91h)", out)
+
+        argon_out = agysl.format_statusline({
+            "model": {"id": "Orchestrator (Argon)", "display_name": "Orchestrator (Argon)"},
+            "quota": base_quota,
+        })
+        self.assertIn("57%(2h)/100%(168h)", argon_out)
+
+    def test_quota_orchestrator_3p_variants(self) -> None:
+        base_quota = {
+            "3p-5h": {"remaining_fraction": 0.42, "reset_in_seconds": 3600},
+            "3p-weekly": {"remaining_fraction": 0.33, "reset_in_seconds": 172800},
+            "gemini-5h": {"remaining_fraction": 0.90, "reset_in_seconds": 7200},
+            "gemini-weekly": {"remaining_fraction": 0.80, "reset_in_seconds": 259200},
+        }
+        for label in ("Orchestrator (Opus)", "Orchestrator (GPT-5)", "Orchestrator (o3)"):
+            out = agysl.format_statusline({
+                "model": {"id": label, "display_name": label},
+                "quota": base_quota,
+            })
+            self.assertIn("42%(1h)/33%(48h)", out)
+
+    def test_quota_orchestrator_generic_label_fallbacks(self) -> None:
+        base_quota = {
+            "3p-5h": {"remaining_fraction": 1.0, "reset_in_seconds": 17823},
+            "3p-weekly": {"remaining_fraction": 1.0, "reset_in_seconds": 604623},
+            "gemini-5h": {"remaining_fraction": 0.5729523, "reset_in_seconds": 6008},
+            "gemini-argon-wtu-weekly": {"remaining_fraction": 1.0, "reset_in_seconds": 604623},
+            "gemini-weekly": {"remaining_fraction": 0.16663404, "reset_in_seconds": 328868},
+        }
+        # 1. Fallback to model.id when display_name is generic "Orchestrator"
+        out_via_id = agysl.format_statusline({
+            "model": {"display_name": "Orchestrator", "id": "gemini-4-neon-high"},
+            "quota": base_quota,
+        })
+        self.assertIn("57%(2h)/17%(91h)", out_via_id)
+
+        # 2. Fallback to settings.json orchestrator config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_path = os.path.join(tmpdir, "settings.json")
+            with open(settings_path, "w", encoding="utf-8") as sf:
+                json.dump({
+                    "orchestrator": {
+                        "planner": "Gemini 4 Neon (High)",
+                        "executor": "Gemini 4 Hydrogen (High)",
+                    }
+                }, sf)
+            os.environ["AGY_SETTINGS_FILE"] = settings_path
+            out_via_settings = agysl.format_statusline({
+                "model": {"display_name": "Orchestrator", "id": "Orchestrator"},
+                "quota": base_quota,
+            })
+            self.assertIn("57%(2h)/17%(91h)", out_via_settings)
+
+            # 3. Fallback to transcript.jsonl when settings file is absent
+            os.environ["AGY_SETTINGS_FILE"] = os.path.join(tmpdir, "missing.json")
+            tpath = os.path.join(tmpdir, "transcript.jsonl")
+            with open(tpath, "w", encoding="utf-8") as tf:
+                tf.write(json.dumps({
+                    "type": "PLANNER_RESPONSE",
+                    "model": "gemini-4-neon-high",
+                    "input_tokens": 100,
+                    "cache_read_tokens": 900,
+                    "output_tokens": 50,
+                }) + "\n")
+            out_via_transcript = agysl.format_statusline({
+                "model": {"display_name": "Orchestrator", "id": "Orchestrator"},
+                "transcript_path": tpath,
+                "quota": base_quota,
+            })
+            self.assertIn("57%(2h)/17%(91h)", out_via_transcript)
+
+    def test_model_config_registry_pricing_and_family(self) -> None:
+        # Pricing lookups across Gemini, Claude, OpenAI, display names, and Orchestrator labels
+        self.assertEqual(agysl.resolve_model_price("gemini-4-neon-high"), {"input": 3.00, "cache": 0.15, "output": 15.00})
+        self.assertEqual(agysl.resolve_model_price("Gemini 4 Carbon (High)"), {"input": 2.00, "cache": 0.10, "output": 10.00})
+        self.assertEqual(agysl.resolve_model_price("Orchestrator (Neon)"), {"input": 3.00, "cache": 0.15, "output": 15.00})
+        self.assertEqual(agysl.resolve_model_price("gemini-3.5-flash-lite"), {"input": 0.30, "cache": 0.03, "output": 2.50})
+        self.assertEqual(agysl.resolve_model_price("Claude Opus 4 (Thinking)"), {"input": 15.00, "cache": 1.50, "output": 75.00})
+        self.assertEqual(agysl.resolve_model_price("claude-sonnet-5"), {"input": 2.00, "cache": 0.20, "output": 10.00})
+        self.assertEqual(agysl.resolve_model_price("gpt-5"), {"input": 1.25, "cache": 0.125, "output": 10.00})
+        self.assertEqual(agysl.resolve_model_price("o3-pro"), {"input": 2.00, "cache": 0.50, "output": 8.00})
+        self.assertEqual(agysl.resolve_model_price("unknown-future-model"), agysl.DEFAULT_MODEL_PRICE)
+
+        # Quota family resolution including precedence ("o3-pro" -> openai, NOT gemini "pro")
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("o3-pro"), ["gpt", "openai", "claude", "3p"])
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("Orchestrator (Pro)"), ["gemini"])
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("Claude Sonnet 4"), ["claude", "anthropic", "3p"])
+        # Unlisted future models fall back cleanly via QUOTA_FAMILIES
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("Gemini 5 Xenon"), ["gemini"])
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("Claude 6 Ultra"), ["claude", "anthropic", "3p"])
+        self.assertEqual(agysl.infer_preferred_quota_prefixes("GPT-6"), ["gpt", "openai", "claude", "3p"])
+
+    def test_adding_single_model_config_entry_enables_pricing_and_quota(self) -> None:
+        agysl.MODEL_CONFIGS["gemini-5-krypton"] = {
+            "match": ("gemini-5-krypton",),
+            "tokens": ("krypton",),
+            "family": "gemini",
+            "quota_variants": ("krypton",),
+            "price": {"input": 4.00, "cache": 0.20, "output": 20.00},
+        }
+        try:
+            cost = agysl.calc_cost_usd(1_000_000, 1_000_000, 1_000_000, "gemini-5-krypton-high")
+            self.assertAlmostEqual(cost, 24.20, places=4)
+
+            out = agysl.format_statusline({
+                "model": {"id": "Orchestrator (Krypton)", "display_name": "Orchestrator (Krypton)"},
+                "quota": {
+                    "3p-5h": {"remaining_fraction": 1.0, "reset_in_seconds": 3600},
+                    "3p-weekly": {"remaining_fraction": 1.0, "reset_in_seconds": 86400},
+                    "gemini-5h": {"remaining_fraction": 0.55, "reset_in_seconds": 3600},
+                    "gemini-weekly": {"remaining_fraction": 0.44, "reset_in_seconds": 86400},
+                    "gemini-krypton-wtu-weekly": {"remaining_fraction": 0.88, "reset_in_seconds": 172800},
+                },
+            })
+            self.assertIn("55%(1h)/88%(48h)", out)
+        finally:
+            agysl.MODEL_CONFIGS.pop("gemini-5-krypton", None)
+
     def test_transcript_fallback_for_cache_hit_and_context(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
             tf.write(json.dumps({
